@@ -1,0 +1,89 @@
+name: Continuous Deployment Workflow
+
+on:
+  push:
+    branches:
+      - main  # Trigger workflow on push to the main branch
+  workflow_dispatch:  # Allow manual triggering of the workflow
+
+env:
+  # Global environment variables (non-sensitive)
+  PYTHON_ENV: production
+  NODE_ENV: production
+  DOCKER_BUILDKIT: 1  # Enable Docker BuildKit for better performance and caching
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest  # Use the latest stable Ubuntu runner
+
+    # Define environment-specific configurations
+    strategy:
+      matrix:
+        environment: [staging, production]  # Define environments for deployment
+      fail-fast: false  # Continue running other jobs even if one fails
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Fetch only the latest commit for faster execution
+
+      # Step 2: Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"  # Use Python 3.10 for compatibility with the project
+
+      # Step 3: Install Python dependencies
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt  # Install dependencies from requirements.txt
+
+      # Step 4: Set up Node.js environment
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"  # Use Node.js 18 for compatibility with the project
+
+      # Step 5: Install JavaScript dependencies
+      - name: Install JavaScript Dependencies
+        run: npm ci  # Clean install dependencies to ensure a consistent build
+
+      # Step 6: Build Docker image
+      - name: Build Docker Image
+        run: |
+          docker build \
+            --build-arg ENV=${{ matrix.environment }} \
+            --tag federated-learning-framework:${{ matrix.environment }} .
+
+      # Step 7: Push Docker image to registry
+      - name: Push Docker Image to Registry
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}  # Docker Hub username
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}  # Docker Hub password
+        run: |
+          echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+          docker tag federated-learning-framework:${{ matrix.environment }} myregistry.com/federated-learning-framework:${{ matrix.environment }}
+          docker push myregistry.com/federated-learning-framework:${{ matrix.environment }}
+
+      # Step 8: Deploy to Kubernetes
+      - name: Deploy to Kubernetes
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}  # Kubernetes configuration file
+        run: |
+          kubectl apply -f k8s/${{ matrix.environment }}/deployment.yaml
+          kubectl rollout status deployment/federated-learning-framework -n ${{ matrix.environment }}
+
+      # Step 9: Post-deployment health check
+      - name: Health Check
+        run: |
+          curl -fsSL https://${{ matrix.environment }}.myapp.com/health || exit 1
+
+# Notes:
+# - Secrets (e.g., DOCKER_USERNAME, DOCKER_PASSWORD, KUBECONFIG) must be stored securely in GitHub Actions secrets.
+# - The `k8s/${{ matrix.environment }}/deployment.yaml` file should contain Kubernetes deployment configurations for each environment.
+# - The health check endpoint should return a 200 status code if the application is running correctly.
+# - This workflow is designed to handle both staging and production deployments using a matrix strategy.

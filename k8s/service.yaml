@@ -1,0 +1,162 @@
+# Kubernetes Service Manifest for Federated Learning Framework
+# This configuration exposes the inference API and other framework endpoints.
+# Designed for production-grade deployment with environment separation, security, and performance optimizations.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: federated-learning-service  # Name of the service
+  namespace: production             # Namespace for production environment
+  labels:
+    app: federated-learning         # Label to identify the application
+    environment: production          # Environment label
+spec:
+  type: ClusterIP                   # Service type: ClusterIP for internal communication
+  selector:
+    app: federated-learning         # Matches the pods with this label
+  ports:
+    - name: api                     # Port for the inference API
+      protocol: TCP
+      port: 8080                    # External port exposed by the service
+      targetPort: 8080              # Port on the container
+    - name: metrics                 # Port for metrics endpoint (e.g., Prometheus scraping)
+      protocol: TCP
+      port: 9090                    # External port exposed by the service
+      targetPort: 9090              # Port on the container
+    - name: admin                   # Port for admin/debugging endpoints
+      protocol: TCP
+      port: 8000                    # External port exposed by the service
+      targetPort: 8000              # Port on the container
+
+# Annotations for service-level configurations
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb" # Example for AWS: Use Network Load Balancer for better performance
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true" # Example for Azure: Internal load balancer
+    service.beta.kubernetes.io/timeout: "300s" # Timeout for connections
+
+# Environment-specific configurations
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: federated-learning-config
+  namespace: production
+data:
+  # Application environment variables
+  ENV: "production"                # Environment identifier
+  API_TIMEOUT: "30s"               # Timeout for API requests
+  LOG_LEVEL: "INFO"                # Logging level
+  MAX_CONNECTIONS: "100"           # Maximum concurrent connections
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: federated-learning-secrets
+  namespace: production
+type: Opaque
+data:
+  # Sensitive data encoded in base64
+  DATABASE_URL: ${DATABASE_URL}    # Database connection string
+  API_KEY: ${API_KEY}              # API key for external services
+  JWT_SECRET: ${JWT_SECRET}        # Secret for JWT token signing
+
+# Resource limits and requests for pods
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: federated-learning-pod
+  namespace: production
+spec:
+  containers:
+    - name: inference-api
+      image: federated-learning-api:latest
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          memory: "512Mi"          # Minimum memory required
+          cpu: "500m"              # Minimum CPU required
+        limits:
+          memory: "2Gi"            # Maximum memory allowed
+          cpu: "2"                 # Maximum CPU allowed
+      envFrom:
+        - configMapRef:
+            name: federated-learning-config
+        - secretRef:
+            name: federated-learning-secrets
+      readinessProbe:
+        httpGet:
+          path: /healthz           # Endpoint for readiness check
+          port: 8080
+        initialDelaySeconds: 5     # Delay before starting readiness checks
+        periodSeconds: 10          # Frequency of readiness checks
+      livenessProbe:
+        httpGet:
+          path: /healthz           # Endpoint for liveness check
+          port: 8080
+        initialDelaySeconds: 10    # Delay before starting liveness checks
+        periodSeconds: 15          # Frequency of liveness checks
+      securityContext:
+        runAsUser: 1000            # Run container as non-root user
+        runAsGroup: 1000           # Run container as non-root group
+        readOnlyRootFilesystem: true # Ensure root filesystem is read-only
+        allowPrivilegeEscalation: false # Prevent privilege escalation
+
+# Horizontal Pod Autoscaler for scaling based on CPU usage
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: federated-learning-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: federated-learning-deployment
+  minReplicas: 2                   # Minimum number of replicas
+  maxReplicas: 10                  # Maximum number of replicas
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          averageUtilization: 70   # Target CPU utilization percentage
+
+# Network Policy for restricting access
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: federated-learning-network-policy
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: federated-learning
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16      # Allow traffic from internal network
+        - namespaceSelector:
+            matchLabels:
+              environment: production
+        - podSelector:
+            matchLabels:
+              app: federated-learning
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0        # Allow outbound traffic to any destination
+      ports:
+        - protocol: TCP
+          port: 443               # Allow HTTPS traffic

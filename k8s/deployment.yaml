@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federated-learning-framework
+  namespace: production # Change to 'staging' or 'development' for other environments
+  labels:
+    app: federated-learning-framework
+spec:
+  replicas: 3 # Number of pod replicas for scalability; adjust based on environment
+  selector:
+    matchLabels:
+      app: federated-learning-framework
+  template:
+    metadata:
+      labels:
+        app: federated-learning-framework
+    spec:
+      containers:
+        - name: app-container
+          image: your-docker-registry/federated-learning-framework:latest # Replace with your Docker image
+          imagePullPolicy: IfNotPresent # Use 'Always' for staging/dev to pull the latest image
+          ports:
+            - containerPort: 8000 # Adjust based on your app's exposed port
+          env:
+            # Environment variables for configuration
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: environment # dev, staging, or production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: database_url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: secret_key
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: redis_url
+          resources:
+            # Resource limits and requests for production-grade performance
+            limits:
+              memory: "512Mi" # Maximum memory the container can use
+              cpu: "500m" # Maximum CPU the container can use
+            requests:
+              memory: "256Mi" # Minimum memory guaranteed for the container
+              cpu: "250m" # Minimum CPU guaranteed for the container
+          readinessProbe:
+            # Health check to determine if the app is ready to serve traffic
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # Health check to determine if the app is alive
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          volumeMounts:
+            - name: app-logs
+              mountPath: /var/log/app
+      volumes:
+        - name: app-logs
+          emptyDir: {} # Temporary storage for logs; replace with PersistentVolume for production
+      imagePullSecrets:
+        - name: regcred # Docker registry credentials for pulling private images
+      securityContext:
+        runAsUser: 1000 # Non-root user for security
+        runAsGroup: 3000
+        fsGroup: 2000
+      restartPolicy: Always # Ensure the container restarts on failure
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: production
+data:
+  environment: "production" # Change to 'staging' or 'dev' for other environments
+  log_level: "INFO" # Logging level: DEBUG, INFO, WARN, ERROR
+  api_timeout: "30" # API timeout in seconds
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: production
+type: Opaque
+data:
+  database_url: ${DATABASE_URL_BASE64} # Base64-encoded database URL
+  secret_key: ${SECRET_KEY_BASE64} # Base64-encoded secret key
+  redis_url: ${REDIS_URL_BASE64} # Base64-encoded Redis URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federated-learning-service
+  namespace: production
+  labels:
+    app: federated-learning-framework
+spec:
+  type: ClusterIP # Use LoadBalancer for external access or NodePort for debugging
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+  selector:
+    app: federated-learning-framework
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: federated-learning-ingress
+  namespace: production
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m" # Adjust based on upload size requirements
+spec:
+  rules:
+    - host: federated-learning.example.com # Replace with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: federated-learning-service
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - federated-learning.example.com
+      secretName: tls-secret # TLS certificate secret
